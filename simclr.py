@@ -7,7 +7,8 @@ import torch.nn.functional as F
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-from utils import save_config_file, accuracy, save_checkpoint
+from utils import accuracy, save_checkpoint
+from matplotlib import pyplot as plt
 
 torch.manual_seed(0)
 
@@ -25,29 +26,28 @@ class SimCLR(object):
 
     def info_nce_loss(self, features):
 
+        # generate label number [0, 1, 2 ,..., 15, 0, 1, 2, ..., 15]
         labels = torch.cat([torch.arange(self.args.batch_size) for i in range(self.args.n_views)], dim=0)
+        # marking positive sample [1, 0, ..., 1 (16-th element), ..., 0]
         labels = (labels.unsqueeze(0) == labels.unsqueeze(1)).float()
         labels = labels.to(self.args.device)
 
         features = F.normalize(features, dim=1)
 
         similarity_matrix = torch.matmul(features, features.T)
-        # assert similarity_matrix.shape == (
-        #     self.args.n_views * self.args.batch_size, self.args.n_views * self.args.batch_size)
-        # assert similarity_matrix.shape == labels.shape
 
         # discard the main diagonal from both: labels and similarities matrix
         mask = torch.eye(labels.shape[0], dtype=torch.bool).to(self.args.device)
         labels = labels[~mask].view(labels.shape[0], -1)
         similarity_matrix = similarity_matrix[~mask].view(similarity_matrix.shape[0], -1)
-        # assert similarity_matrix.shape == labels.shape
 
-        # select and combine multiple positives
+        # select and combine multiple positives shape: [32, 1]
         positives = similarity_matrix[labels.bool()].view(labels.shape[0], -1)
 
-        # select only the negatives the negatives
+        # select only the negatives the negatives shape: [32,30]
         negatives = similarity_matrix[~labels.bool()].view(similarity_matrix.shape[0], -1)
 
+        # [32, 31]
         logits = torch.cat([positives, negatives], dim=1)
         labels = torch.zeros(logits.shape[0], dtype=torch.long).to(self.args.device)
 
@@ -58,9 +58,6 @@ class SimCLR(object):
 
         scaler = GradScaler(enabled=self.args.fp16_precision)
 
-        # save config file
-        save_config_file(self.writer.log_dir, self.args)
-
         n_iter = 0
         logging.info(f"Start SimCLR training for {self.args.epochs} epochs.")
         logging.info(f"Training with gpu: {self.args.disable_cuda}.")
@@ -68,7 +65,6 @@ class SimCLR(object):
         for epoch_counter in range(self.args.epochs):
             for images, _ in tqdm(train_loader):
                 images = torch.cat(images, dim=0)
-
                 images = images.to(self.args.device)
 
                 with autocast(enabled=self.args.fp16_precision):
